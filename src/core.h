@@ -25,6 +25,7 @@
 #define __CORE_HEADER
 #define BUFF_SIZE 8*1024  // used to read responses from proxies.
 #define     MAX_LOCALNET 64
+#define     MAX_PROXYNET 64
 
 #include "ip_type.h"
 
