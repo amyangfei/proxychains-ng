@@ -65,7 +65,9 @@ unsigned int proxychains_max_chain = 1;
 int proxychains_quiet_mode = 0;
 int proxychains_resolver = 0;
 localaddr_arg localnet_addr[MAX_LOCALNET];
+localaddr_arg proxynet_addr[MAX_PROXYNET];
 size_t num_localnet_addr = 0;
+size_t num_proxynet_addr = 0;
 unsigned int remote_dns_subnet = 224;
 
 pthread_once_t init_once = PTHREAD_ONCE_INIT;
@@ -158,6 +160,8 @@ static void get_chain_data(proxy_data * pd, unsigned int *proxy_count, chain_typ
 	char *env;
 	char local_in_addr_port[32];
 	char local_in_addr[32], local_in_port[32], local_netmask[32];
+	char proxy_addr_port[32];
+	char proxy_addr[32], proxy_port[32], proxy_netmask[32];
 	FILE *file = NULL;
 
 	if(proxychains_got_chain_data)
@@ -281,6 +285,47 @@ static void get_chain_data(proxy_data * pd, unsigned int *proxy_count, chain_typ
 					} else {
 						fprintf(stderr, "# of localnet exceed %d.\n", MAX_LOCALNET);
 					}
+				} else if(strstr(buff, "proxynet")) {
+					if(sscanf(buff, "%s %21[^/]/%15s", user, proxy_addr_port, proxy_netmask) < 3) {
+						fprintf(stderr, "proxynet format error");
+						exit(1);
+					}
+					/* clean previously used buffer */
+					memset(proxy_port, 0, sizeof(proxy_port) / sizeof(proxy_port[0]));
+
+					if(sscanf(proxy_addr_port, "%15[^:]:%5s", proxy_addr, proxy_port) < 2) {
+						PDEBUG("added proxynet: netaddr=%s, netmask=%s\n",
+						       proxy_addr, proxy_netmask);
+					} else {
+						PDEBUG("added proxynet: netaddr=%s, port=%s, netmask=%s\n",
+						       proxy_addr, proxy_port, proxy_netmask);
+					}
+					if(num_proxynet_addr < MAX_PROXYNET) {
+						int error;
+						error =
+						    inet_pton(AF_INET, proxy_addr,
+							      &proxynet_addr[num_proxynet_addr].in_addr);
+						if(error <= 0) {
+							fprintf(stderr, "proxynet address error\n");
+							exit(1);
+						}
+						error =
+						    inet_pton(AF_INET, proxy_netmask,
+							      &proxynet_addr[num_proxynet_addr].netmask);
+						if(error <= 0) {
+							fprintf(stderr, "proxynet netmask error\n");
+							exit(1);
+						}
+						if(proxy_port[0]) {
+							proxynet_addr[num_proxynet_addr].port =
+							    (short) atoi(proxy_port);
+						} else {
+							proxynet_addr[num_proxynet_addr].port = 0;
+						}
+						++num_proxynet_addr;
+					} else {
+						fprintf(stderr, "# of proxynet exceed %d.\n", MAX_PROXYNET);
+					}
 				} else if(strstr(buff, "chain_len")) {
 					char *pc;
 					int len;
@@ -373,12 +418,26 @@ int connect(int sock, const struct sockaddr *addr, unsigned int len) {
 	// check if connect called from proxydns
         remote_dns_connect = !v6 && (ntohl(p_addr_in->s_addr) >> 24 == remote_dns_subnet);
 
-	if (!v6) for(i = 0; i < num_localnet_addr && !remote_dns_connect; i++) {
-		if((localnet_addr[i].in_addr.s_addr & localnet_addr[i].netmask.s_addr)
-		   == (p_addr_in->s_addr & localnet_addr[i].netmask.s_addr)) {
-			if(!localnet_addr[i].port || localnet_addr[i].port == port) {
-				PDEBUG("accessing localnet using true_connect\n");
-				return true_connect(sock, addr, len);
+	int check_localnet = 1;
+	for(i = 0; i < num_proxynet_addr; i++) {
+		if((proxynet_addr[i].in_addr.s_addr & proxynet_addr[i].netmask.s_addr)
+			== (p_addr_in->s_addr & proxynet_addr[i].netmask.s_addr)) {
+			if(!proxynet_addr[i].port || proxynet_addr[i].port == port) {
+				PDEBUG("force accessing proxynet with proxy\n");
+				check_localnet = 0;
+				break;
+			}
+		}
+    }
+
+	if (!v6 && check_localnet) {
+		for(i = 0; i < num_localnet_addr && !remote_dns_connect; i++) {
+			if((localnet_addr[i].in_addr.s_addr & localnet_addr[i].netmask.s_addr)
+			   == (p_addr_in->s_addr & localnet_addr[i].netmask.s_addr)) {
+				if(!localnet_addr[i].port || localnet_addr[i].port == port) {
+					PDEBUG("accessing localnet using true_connect\n");
+					return true_connect(sock, addr, len);
+				}
 			}
 		}
 	}
