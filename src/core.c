@@ -612,7 +612,17 @@ int connect_proxy_chain(int sock, ip_type target_ip,
 					/* We've reached the end of the list, go to the start */
  					offset = 0;
 					looped++;
-					continue;
+
+					/* fix dead loop */
+					if (looped > 24) {
+						PDEBUG("GOTO MORE PROXIES 0\n");
+						goto error_more;
+					} else {
+						PDEBUG("rr_type release all proxies\n");
+						release_all(pd, proxy_count); 
+						usleep(10000 * looped);
+						continue;
+					}
 				} else if (looped && rc > 0 && offset >= curr_pos) {
  					PDEBUG("GOTO MORE PROXIES 0\n");
 					/* We've gone back to the start and now past our starting position */
