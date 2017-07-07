@@ -66,8 +66,10 @@ int proxychains_quiet_mode = 0;
 int proxychains_resolver = 0;
 localaddr_arg localnet_addr[MAX_LOCALNET];
 localaddr_arg proxynet_addr[MAX_PROXYNET];
+proxyhost_arg proxyhost_addr[MAX_PROXYHOST];
 size_t num_localnet_addr = 0;
 size_t num_proxynet_addr = 0;
+size_t num_proxyhost_addr = 0;
 unsigned int remote_dns_subnet = 224;
 
 pthread_once_t init_once = PTHREAD_ONCE_INIT;
@@ -141,10 +143,10 @@ static void init_lib_wrapper(const char* caller) {
 	pthread_once(&init_once, do_init);
 }
 
-/* if we use gcc >= 3, we can instruct the dynamic loader 
+/* if we use gcc >= 3, we can instruct the dynamic loader
  * to call init_lib at link time. otherwise it gets loaded
  * lazily, which has the disadvantage that there's a potential
- * race condition if 2 threads call it before init_l is set 
+ * race condition if 2 threads call it before init_l is set
  * and PTHREAD support was disabled */
 #if __GNUC__ > 2
 __attribute__((constructor))
@@ -162,6 +164,7 @@ static void get_chain_data(proxy_data * pd, unsigned int *proxy_count, chain_typ
 	char local_in_addr[32], local_in_port[32], local_netmask[32];
 	char proxy_addr_port[32];
 	char proxy_addr[32], proxy_port[32], proxy_netmask[32];
+    char proxyhost_host[64], proxyhost_port[16];
 	FILE *file = NULL;
 
 	if(proxychains_got_chain_data)
@@ -285,7 +288,24 @@ static void get_chain_data(proxy_data * pd, unsigned int *proxy_count, chain_typ
 					} else {
 						fprintf(stderr, "# of localnet exceed %d.\n", MAX_LOCALNET);
 					}
-				} else if(strstr(buff, "proxynet")) {
+				} else if (strstr(buff, "proxyhost") ) {
+					if(sscanf(buff, "%s %[^:]:%5s", user, proxyhost_host, proxyhost_port) < 2) {
+						fprintf(stderr, "proxyhost format error");
+						exit(1);
+					}
+					if(num_proxynet_addr < MAX_PROXYNET) {
+                        memcpy(proxyhost_addr[num_proxyhost_addr].host, proxyhost_host,
+                            sizeof(proxyhost_host) / sizeof(proxyhost_host[0]));
+                        if (proxyhost_port[0]) {
+                            proxyhost_addr[num_proxyhost_addr].port = (short) atoi(proxyhost_port);
+                        } else {
+                            proxyhost_addr[num_proxyhost_addr].port = 0;
+                        }
+                        ++num_proxyhost_addr;
+                    } else {
+						fprintf(stderr, "# of proxynet exceed %d.\n", MAX_PROXYHOST);
+                    }
+                } else if(strstr(buff, "proxynet")) {
 					if(sscanf(buff, "%s %21[^/]/%15s", user, proxy_addr_port, proxy_netmask) < 3) {
 						fprintf(stderr, "proxynet format error");
 						exit(1);
@@ -464,6 +484,10 @@ struct hostent *gethostbyname(const char *name) {
 	INIT();
 	PDEBUG("gethostbyname: %s\n", name);
 
+	for(size_t i = 0; i < num_proxynet_addr; i++) {
+        PDEBUG("----------- addr: %u, port: %d", proxynet_addr[i].in_addr.s_addr, proxynet_addr[i].port);
+    }
+
 	if(proxychains_resolver)
 		return proxy_gethostbyname(name, &ghbndata);
 	else
@@ -475,11 +499,40 @@ struct hostent *gethostbyname(const char *name) {
 int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
 	INIT();
 	PDEBUG("getaddrinfo: %s %s\n", node ? node : "null", service ? service : "null");
+	PDEBUG("*********************** node:%s service:%s\n", node, service);
 
+	for(size_t i = 0; i < num_proxynet_addr; i++) {
+        PDEBUG("----------- addr: %u, port: %d\n", proxynet_addr[i].in_addr.s_addr, proxynet_addr[i].port);
+    }
+	for(size_t i = 0; i < num_proxyhost_addr; i++) {
+        PDEBUG("----------- host: %s, port: %d\n", proxyhost_addr[i].host, proxyhost_addr[i].port);
+    }
+
+    int result;
 	if(proxychains_resolver)
-		return proxy_getaddrinfo(node, service, hints, res);
+		result = proxy_getaddrinfo(node, service, hints, res);
 	else
-		return true_getaddrinfo(node, service, hints, res);
+		result = true_getaddrinfo(node, service, hints, res);
+
+    struct addrinfo *p;
+    char ipstr_v4[INET_ADDRSTRLEN];
+    char ipstr_v6[INET_ADDRSTRLEN];
+    for (p = *res; p != NULL; p = p->ai_next) {
+        struct in_addr  *addr;
+        if (p->ai_family == AF_INET) {
+            struct sockaddr_in *ipv = (struct sockaddr_in *)p->ai_addr;
+            addr = &(ipv->sin_addr);
+            inet_ntop(p->ai_family, addr, ipstr_v4, sizeof(ipstr_v4));
+        } else {
+            struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)p->ai_addr;
+            addr = (struct in_addr *) &(ipv6->sin6_addr);
+            inet_ntop(p->ai_family, addr, ipstr_v6, sizeof(ipstr_v6));
+        }
+    }
+    PDEBUG("---------------> getaddrinfo: ipv4 Address: %s\n", ipstr_v4);
+    PDEBUG("---------------> getaddrinfo: ipv6 Address: %s\n", ipstr_v6);
+
+    return result;
 }
 
 void freeaddrinfo(struct addrinfo *res) {
